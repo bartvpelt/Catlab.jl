@@ -471,7 +471,8 @@ function parse_diagram_data(C::FinCat, statements::Vector{<:AST.DiagramExpr};
   isnothing(hom_parser) && (hom_parser = (f,x,y) -> parse_hom(C,f))
   g, eqs = DiagramGraph(), Pair[]
   F_ob, F_hom, params = [], [], Dict{Int,Any}()
-  attrnames = map(first,presentation(C).generators[:Attr])
+  attrs,homs = generators(presentation(C),:Attr),generators(presentation(C),:Hom)
+  mornames = map(first,[attrs;homs])
   for stmt in statements
     @match stmt begin
       AST.ObOver(x, X) => begin
@@ -492,7 +493,7 @@ function parse_diagram_data(C::FinCat, statements::Vector{<:AST.DiagramExpr};
       AST.AttrOver(f,x,y,expr) => begin
         e = parse!(g,AST.Hom(f,x,y))
         push!(F_hom, FreeSchema.Attr{:nothing}([f],[]))
-        aux_func = make_func(expr,attrnames)
+        aux_func = make_func(expr,mornames)
         params[e] = aux_func
       end
       #AST.AssignLiteral(x, value) => begin
@@ -764,6 +765,8 @@ function make_query(C::FinCat{Ob}, data::DiagramData{T}) where {T, Ob}
   F_hom = mapvals(F_hom, keys=true) do h, f
     make_query_hom(C, f, F_ob[dom(J,h)], F_ob[codom(J,h)])
   end
+  F_hom = typeof(F_hom) == Vector{FreeSchema.Attr{:nothing}} ? 
+    Any[a for a in F_hom] : F_hom
   if query_type <: Ob
     Diagram(DiagramData{T}(F_ob, F_hom, J, data.params), C)
   else
@@ -925,22 +928,12 @@ function parse_diagram_ast(body::Expr; free::Bool=false, preprocess::Bool=true)
         parse_hom_over(f,x,y,state.ob_over[x],state.ob_over[y],h)
     end
       
-      #begin
-      #  X, Y = state.ob_over[x], state.ob_over[y] #X,Y are ObGenerators (in the base)
-      #  [AST.HomOver(f, x, y, parse_hom_ast(h, X, Y))]
-      #end
-
-      # h could be Julia if y is over an attr
       # (x → y) => h
       # (x → y)::h
       Expr(:call, :(=>), Expr(:call, :(→), x::Symbol, y::Symbol), h) ||
       Expr(:(::), Expr(:call, :(→), x::Symbol, y::Symbol), h) => 
         parse_hom_over(gen_anonhom!(state),x,y,state.ob_over[x],state.ob_over[y],h)
-#        begin
-#          X, Y, z = state.ob_over[x], state.ob_over[y], gen_anonhom!(state)
-#          [AST.HomOver(z, x, y, parse_hom_ast(h, X, Y))]
-#        end
-      # no reason to be special for literals?
+      # make sure to handle literals!
       # x == "foo"
       # "foo" == x
      # Expr(:call, :(==), x::Symbol, value::Literal) ||
@@ -992,13 +985,9 @@ function parse_diagram_ast(body::Expr; free::Bool=false, preprocess::Bool=true)
 end
 function parse_hom_over(name,x,y,X,Y,rhs)
   @match rhs begin
-    Expr(:(->),_...) => begin
-      #push!(aux_funcs,rhs)
-      #n = length(aux_funcs)
+    Expr(:(->),_...) || Expr(:block,_...)=> begin #maybe add check that block ends with a lambda
       [AST.AttrOver(name,x,y,rhs)]
-  end
-#    Expr(:tuple,Expr(:vect,exprs...),n) =>
-#      [AST.AttrOver(name,x,y,n,[parse_hom_ast(h,X,Y) for h in exprs])]
+    end
     _ => [AST.HomOver(name,x,y,parse_hom_ast(rhs,X,Y))]
   end
 end
@@ -1223,18 +1212,6 @@ function reparse_arrows(expr)
   @match expr begin
     Expr(:call, :(→), Expr(:call, :(:), f, x), y) =>
       Expr(:call, :(:), f, Expr(:call, :(→), x, y))
-    #=Expr(:let,decs,body) => begin
-      #currently requires user to put var on LHS, which seems hard to avoid
-      (vars, homs) = @match decs begin #vector of homexprs to be passed in the anonfunc
-        Expr(:(=),lhs::Symbol,rhs) => ([lhs],Expr(:vect,rhs)) #rhs to be parsed as HomOvers
-        Expr(:block,_...) => ([a.args[1] for a in decs.args],
-                              Expr(:vect,[a.args[2] for a in decs.args]...))
-        _ => "You messed up kid"
-      end 
-      aux_func = make_func(body,vars...)
-      push!(aux_funcs,aux_func)
-      Expr(:tuple,homs,length(aux_funcs))
-    end=#
     Expr(head, args...) => Expr(head, (reparse_arrows(arg) for arg in args)...)
     _ => expr
   end
