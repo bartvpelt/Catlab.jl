@@ -42,6 +42,7 @@ end
   Compose(homs::Vector{<:HomExpr})
   Id(ob::ObExpr)
   Mapping(assignments::Vector{<:AssignExpr})
+  JuliaCode(code::Expr)
 end
 
 @data DiagramExpr begin
@@ -330,6 +331,7 @@ function parse_hom(C::FinCat{Ob,Hom}, expr::AST.HomExpr) where {Ob,Hom}
     AST.Compose(args) => mapreduce(
       arg -> parse_hom(C, arg), (fs...) -> compose(C, fs...), args)
     AST.Id(x) => id(C, parse_ob(C, x))
+    AST.JuliaCode(expr) => FreeSchema.Attr{:nothing}([],[])
   end
 end
 
@@ -644,20 +646,26 @@ high-level steps of this process are:
 """
 function parse_migration(src_schema::Presentation, ast::AST.Diagram;
                         kw...)
-  C = FinCat(src_schema)
+  C = FinCat(src_schema)q
   d = parse_query_diagram(C, ast.statements)
   DataMigration(make_query(C, d))
 end
 function parse_migration(tgt_schema::Presentation, src_schema::Presentation,
                          ast::AST.Mapping)
   D, C = FinCat(tgt_schema), FinCat(src_schema)
+  homnames = map(first,hom_generators(C))
+  params = Dict()
   ob_rhs, hom_rhs = make_ob_hom_maps(D, ast, missing_hom=true)
   F_ob = mapvals(expr -> parse_query(C, expr), ob_rhs)
   F_hom = mapvals(hom_rhs, keys=true) do f, expr
+    if expr isa AST.JuliaCode
+      aux_func = make_func(expr.code,homnames)
+      params[f] = aux_func
+    end
     parse_query_hom(C, ismissing(expr) ? AST.Mapping(AST.AssignExpr[]) : expr,
                     F_ob[dom(D,f)], F_ob[codom(D,f)])
   end
-  DataMigration(make_query(C, DiagramData{Any}(F_ob, F_hom, D)))
+  DataMigration(make_query(C, DiagramData{Any}(F_ob, F_hom, D,params)))
 end
 function parse_migration(tgt_schema::Presentation, src_schema::Presentation,
                          body::Expr)
@@ -1071,6 +1079,7 @@ function parse_hom_ast(expr, dom::Union{AST.ObGenerator,Nothing}=nothing,
     Expr(:call, :(∘), f, g) => AST.Compose([parse_hom_ast(g), parse_hom_ast(f)])
     Expr(:call, :id, x) => AST.Id(parse_ob_ast(x))
     f::Symbol || Expr(:curly, _...) => AST.HomGenerator(expr)
+    Expr(:block,args...) => AST.JuliaCode(expr)
     _ => error("Invalid morphism expression $expr")
   end
 end
@@ -1217,7 +1226,9 @@ function reparse_arrows(expr)
   end
 end
 function make_func(body,vars)
-  eval(Expr(:(->),Expr(:tuple,vars...),body))
+  expr = Expr(:(->),Expr(:tuple,vars...),body)
+  println(expr)
+  eval(expr)
 end
 """ Left-most argument plus remainder of left-associated binary operations.
 """

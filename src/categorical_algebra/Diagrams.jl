@@ -295,6 +295,9 @@ function universal(f::DiagramHom{op}, dom_lim, codom_lim)
   cone = Multispan(apex(dom_lim), map(ob_generators(J′)) do j′
     j, g = ob_map(f, j′)
     πⱼ = legs(dom_lim)[j]
+    πⱼ = πⱼ isa AbstractVector ? only(πⱼ) : πⱼ 
+    #this is gross but I don't understand why this is sometimes a vector and sometimes a function
+    #can see both cases by migrating my mechlink
     compose(πⱼ, g)
   end)
   universal(codom_lim, cone)
